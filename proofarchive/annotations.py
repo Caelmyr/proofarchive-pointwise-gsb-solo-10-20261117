@@ -53,7 +53,7 @@ class Annotations:
         return self.store.mutate(key, expected, '移除区域批注', change)
 
 
-def overlay(image, annotations, resolved=True):
+def overlay(image, annotations, resolved=True, highlight_id=None):
     output = paper_rgb(image)
     draw = ImageDraw.Draw(output)
     width, height = output.size
@@ -62,9 +62,21 @@ def overlay(image, annotations, resolved=True):
             continue
         x0, y0, x1, y1 = annotation['bounds']
         box = [round(x0 * width), round(y0 * height), round(x1 * width), round(y1 * height)]
-        color = '#8b949e' if annotation['resolved'] else COLORS[annotation['kind']]
-        draw.rectangle(box, outline=color, width=max(2, round(width / 300)))
+        highlighted = annotation['id'] == highlight_id
+        if highlighted:
+            color = '#f5a623'
+        elif annotation['resolved']:
+            color = '#8b949e'
+        else:
+            color = COLORS[annotation['kind']]
+        line_width = max(2, round(width / 300))
+        if highlighted:
+            draw.rectangle([max(0, box[0] - 5), max(0, box[1] - 5),
+                            min(width, box[2] + 5), min(height, box[3] + 5)],
+                           outline='#f5a623', width=line_width + 3)
+        draw.rectangle(box, outline=color, width=line_width)
         label = str(index + 1)
-        draw.rectangle([box[0], box[1], box[0] + 25, box[1] + 20], fill=color)
+        badge = [box[0], box[1], box[0] + 25, box[1] + 20]
+        draw.rectangle(badge, fill=color)
         draw.text((box[0] + 5, box[1] + 3), label, fill='white')
     return output

@@ -15,6 +15,7 @@ from .separations import separation_report, channel_preview, ink_preview
 from .preflight import inspect_document
 from .layout import contact_sheet
 from .packages import export_package, import_package
+from . import review as review_service
 
 
 def body():
@@ -105,8 +106,47 @@ def install(app, root):
         _, _, version = get_version(key, page_id, request.args.get('version'))
         image = load(store, version)
         if request.args.get('annotations') == '1':
-            image = overlay(image, version['annotations'])
+            highlight = request.args.get('highlight')
+            image = overlay(image, version['annotations'], highlight_id=highlight)
         return image_response(thumbnail(image, v.integer(request.args.get('size', 1200), '预览尺寸', 64, 2400)))
+
+    @api.get('/documents/<key>/review-queue')
+    def review_queue(key):
+        document = store.read(key)
+        scope = request.args.get('scope', 'unresolved')
+        v.choice(scope, '审阅范围', ['unresolved', 'all'])
+        return jsonify(review_service.build_queue(document, store, scope == 'unresolved'))
+
+    @api.get('/documents/<key>/pages/<page_id>/annotations/<annotation_id>/crop')
+    def annotation_crop(key, page_id, annotation_id):
+        _, _, version = get_version(key, page_id, request.args.get('version'))
+        annotation = next((a for a in version['annotations'] if a['id'] == annotation_id), None)
+        if annotation is None:
+            raise v.Invalid('批注不存在')
+        return image_response(review_service.crop_image(store, version, annotation))
+
+    @api.get('/documents/<key>/review-package')
+    def review_package(key):
+        document = store.read(key)
+        raw, export_id = review_service.export_review_package(store, document)
+        return download(raw, 'review-pack-' + key + '-' + export_id[:8] + '.zip', 'application/zip')
+
+    @api.post('/documents/<key>/review-package/analyze')
+    def review_package_analyze(key):
+        file = request.files.get('file')
+        if file is None:
+            raise v.Invalid('请选择审阅包ZIP')
+        return jsonify(review_service.analyze_import(store.read(key), file.read()))
+
+    @api.post('/documents/<key>/review-package/import')
+    def review_package_import(key):
+        file = request.files.get('file')
+        if file is None:
+            raise v.Invalid('请选择审阅包ZIP')
+        revision = request.form.get('revision')
+        revision = int(revision) if revision is not None else None
+        document, summary = review_service.apply_import(store, key, file.read(), revision)
+        return jsonify({'document': document, 'summary': summary})
 
     @api.get('/documents/<key>/pages/<page_id>/download')
     def original(key, page_id):
@@ -214,23 +254,50 @@ def install(app, root):
         document = store.create('春季展览手册 · 合成校样', '程序绘制的示范素材，不代表真实印刷观测。包含三页及封面两个版次。')
         key = document['id']
         for index, color in enumerate(['#165e83', '#ce6c48', '#468575']):
-            image = Image.new('RGBA', (640, 900), 'white')
+            landscape = index == 2
+            size = (900, 640) if landscape else (640, 900)
+            image = Image.new('RGBA', size, 'white')
             draw = ImageDraw.Draw(image)
-            draw.rectangle([35, 35, 605, 350], fill=color)
+            w, h = size
+            draw.rectangle([35, 35, w - 35, round(h * .39)], fill=color)
             draw.text((65, 90), 'SPRING / 2026', fill='white', font_size=38)
             draw.text((65, 160), 'DESIGN EXHIBITION', fill='white', font_size=26)
-            draw.text((65, 290), f'PAGE {index+1:02}', fill='white', font_size=22)
+            draw.text((65, h - 60), f'PAGE {index+1:02}', fill='white', font_size=22)
             for line in range(12):
-                draw.rectangle([65, 420+line*25, 575-(line%3)*35, 427+line*25], fill='#8393a5')
-            draw.rectangle([65, 760, 260, 820], fill=color)
+                draw.rectangle([65, round(h * .47) + line * 25,
+                                w - 65 - (line % 3) * 35, round(h * .47) + 7 + line * 25],
+                               fill='#8393a5')
+            draw.rectangle([65, h - 140, 260, h - 80], fill=color)
             document = catalog.import_page(key, encode(image), f'Page-{index+1:02}.png')
+            page = document['pages'][index]
             if index == 0:
-                cover = document['pages'][0]
-                draw.rectangle([65, 760, 260, 820], fill='#e6b44b')
-                draw.text((75, 775), 'UPDATED TIME', fill='#253447', font_size=19)
+                cover = page
+                draw.rectangle([65, h - 140, 260, h - 80], fill='#e6b44b')
+                draw.text((75, h - 125), 'UPDATED TIME', fill='#253447', font_size=19)
                 document = catalog.import_page(key, encode(image), 'Cover-v2.png', page_id=cover['id'])
-                document = annotations.add(key, cover['id'], None, {'bounds': [.09, .83, .43, .93], 'text': '请核对活动时间区域的底色与文字。', 'kind': 'issue'})
-        return jsonify(document)
+                annotations.add(key, cover['id'], None,
+                                {'bounds': [.09, .83, .43, .93], 'text': '请核对活动时间区域的底色与文字。', 'kind': 'issue'})
+                annotations.add(key, cover['id'], None,
+                                {'bounds': [.0, .02, .22, .10], 'text': '左上角贴边标识需要留出安全距离。', 'kind': 'issue'})
+                annotations.add(key, cover['id'], None,
+                                {'bounds': [.62, .46, .94, .55], 'text': '标题行距与设计稿核对。', 'kind': 'note'})
+            elif index == 1:
+                annotations.add(key, page['id'], None,
+                                {'bounds': [.78, .92, 1.0, 1.0], 'text': '右下角页码过于贴边，请确认出血位置。', 'kind': 'issue'})
+                annotations.add(key, page['id'], None,
+                                {'bounds': [.10, .47, .48, .54], 'text': '正文第二段文字颜色偏浅。', 'kind': 'issue'})
+                document = annotations.add(key, page['id'], None,
+                                {'bounds': [.10, .70, .40, .76], 'text': '此条已与排版确认无误。', 'kind': 'approved'})
+                fresh_page = next(p for p in document['pages'] if p['id'] == page['id'])
+                annotations.update(
+                    key, page['id'], None,
+                    fresh_page['versions'][0]['annotations'][2]['id'], {'resolved': True})
+            else:
+                annotations.add(key, page['id'], None,
+                                {'bounds': [.02, .05, .30, .28], 'text': '横版页眉的图文间距需复核。', 'kind': 'issue'})
+                annotations.add(key, page['id'], None,
+                                {'bounds': [.66, .60, .98, .92], 'text': '横版右下图片边缘请核对对齐。', 'kind': 'note'})
+        return jsonify(store.read(key))
 
     app.register_blueprint(api)
     app.view_functions['index'] = lambda: render_template('archive.html')
