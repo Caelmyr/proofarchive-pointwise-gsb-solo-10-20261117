@@ -15,6 +15,7 @@ from .separations import separation_report, channel_preview, ink_preview
 from .preflight import inspect_document
 from .layout import contact_sheet
 from .packages import export_package, import_package
+from . import tiling
 
 
 def body():
@@ -181,6 +182,49 @@ def install(app, root):
         if request.args.get('view') == 'index':
             return jsonify(index)
         return image_response(image)
+
+    def tiling_context(key, page_id):
+        document, page, version = get_version(key, page_id, request.args.get('version'))
+        settings = tiling.parse_args(request.args)
+        image = load(store, version)
+        plan = tiling.build_plan(version, image.size, settings)
+        return document, page, version, plan
+
+    @api.get('/documents/<key>/pages/<page_id>/tiling/plan')
+    def tiling_plan(key, page_id):
+        document, page, version, plan = tiling_context(key, page_id)
+        return jsonify(plan | {'revision': document['revision']})
+
+    @api.get('/documents/<key>/pages/<page_id>/tiling/overview')
+    def tiling_overview(key, page_id):
+        _, _, _, plan = tiling_context(key, page_id)
+        return image_response(tiling.render_overview(plan))
+
+    @api.get('/documents/<key>/pages/<page_id>/tiling/tile')
+    def tiling_tile(key, page_id):
+        document, page, version, plan = tiling_context(key, page_id)
+        row = v.integer(request.args.get('row'), '行号', 1, plan['rows'])
+        col = v.integer(request.args.get('col'), '列号', 1, plan['cols'])
+        tile = next(item for item in plan['tiles'] if item['row'] == row and item['col'] == col)
+        image = tiling.render_tile(store, page, version, plan, tile, document['name'])
+        return Response(tiling.encode_at_dpi(image, plan['print_dpi']),
+                        mimetype='image/png', headers={'Cache-Control': 'no-store'})
+
+    @api.get('/documents/<key>/pages/<page_id>/tiling/manifest')
+    def tiling_manifest(key, page_id):
+        document, page, version, plan = tiling_context(key, page_id)
+        if request.args.get('format') == 'csv':
+            return download(tiling.manifest_csv(plan), f'tiling-{page_id}-manifest.csv', 'text/csv')
+        if request.args.get('format') == 'text':
+            return download(tiling.assembly_text(plan, document['name']),
+                            f'tiling-{page_id}-assembly.txt', 'text/plain')
+        return jsonify(tiling.manifest(page, version, plan, document['name']))
+
+    @api.get('/documents/<key>/pages/<page_id>/tiling/bundle')
+    def tiling_bundle(key, page_id):
+        document, page, version, plan = tiling_context(key, page_id)
+        raw = tiling.build_bundle(store, page, version, plan, document['name'])
+        return download(raw, f'tiling-{page_id}-R{plan["rows"]}xC{plan["cols"]}.zip', 'application/zip')
 
     @api.get('/documents/<key>/package')
     def package(key):
