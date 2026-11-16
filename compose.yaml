@@ -1,0 +1,24 @@
+name: solo13-proofarchive
+services:
+  proofarchive:
+    build: .
+    image: solo13-proofarchive:1.0
+    container_name: solo13-proofarchive
+    ports:
+      - "127.0.0.1:8913:8913"
+    volumes:
+      - archive_data:/data
+    environment:
+      PROOFARCHIVE_DATA_DIR: /data
+      PORT: "8913"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+    mem_limit: 2g
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8913/archive/documents')"]
+      interval: 15s
+      timeout: 4s
+      retries: 3
+volumes:
+  archive_data:
