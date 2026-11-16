@@ -13,9 +13,22 @@ def rotate_bounds(bounds, turns):
 
 
 def transform_annotations(annotations, crop, turns):
+    result = []
+    for item in transform_regions(annotations, crop, turns):
+        result.append(item)
+    return result
+
+
+def transform_regions(regions, crop, turns):
+    """Move normalised regions through the same crop/rotation as the pixels.
+
+    Regions that fall outside the crop are dropped, and every surviving region
+    gets a new identity so a later delivery cannot quietly reference the source
+    version's coordinates.
+    """
     left, top, right, bottom = crop
     result = []
-    for item in annotations:
+    for item in regions:
         bounds = item['bounds']
         x0, y0 = max(bounds[0], left), max(bounds[1], top)
         x1, y1 = min(bounds[2], right), min(bounds[3], bottom)
@@ -51,6 +64,7 @@ def transform(store, document, page_id, version_id, crop, rotation):
     version = derived_version(store, source, image, source['label'] + ' · 裁切校样',
                               {'kind': 'transform', 'crop': actual, 'rotation': rotation})
     version['annotations'] = transform_annotations(source['annotations'], actual, turns)
+    version['redactions'] = transform_regions(source.get('redactions', []), actual, turns)
     source_size = source['trim_mm']
     width = source_size[0] * (actual[2]-actual[0])
     height = source_size[1] * (actual[3]-actual[1])

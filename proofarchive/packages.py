@@ -93,6 +93,14 @@ def import_package(store, raw):
                     annotation['id'] = uid()
                     annotation['bounds'] = v.rectangle(annotation['bounds'])
                     annotation['text'] = v.text(annotation['text'], '批注', 3000)
+                imported = []
+                for redaction in v.list_value(version.get('redactions', []), 100):
+                    imported.append({'id': uid(),
+                                     'bounds': v.rectangle(redaction.get('bounds')),
+                                     'purpose': v.text(redaction.get('purpose', ''), '遮挡用途', 500),
+                                     'created': redaction.get('created') or now(),
+                                     'updated': redaction.get('updated') or now()})
+                version['redactions'] = imported
         created = store.create(name+' · 导入', document.get('notes', ''))
         def restore(target):
             target['pages'] = copied

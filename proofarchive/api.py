@@ -8,6 +8,8 @@ from . import validation as v
 from .store import ArchiveStore
 from .catalog import Catalog
 from .annotations import Annotations, overlay
+from .redactions import Redactions, apply, items as redaction_items
+from .delivery import Delivery
 from .images import load, encode, thumbnail, region_statistics
 from .geometry import transform
 from .compare import compare_images
@@ -33,6 +35,8 @@ def install(app, root):
     store = ArchiveStore(root)
     catalog = Catalog(store)
     annotations = Annotations(store)
+    redactions = Redactions(store)
+    delivery = Delivery(store)
     app.extensions['proofarchive'] = store
     api = Blueprint('archive', __name__, url_prefix='/archive')
 
@@ -140,7 +144,71 @@ def install(app, root):
         values = body()
         return jsonify(annotations.remove(key, page_id, values.get('version_id'), annotation_id, values.get('revision')))
 
-    @api.post('/documents/<key>/pages/<page_id>/statistics')
+    @api.get('/documents/<key>/pages/<page_id>/redacted')
+    def redacted_preview(key, page_id):
+        _, _, version = get_version(key, page_id, request.args.get('version'))
+        mask = request.args.get('mask', '1')
+        if mask not in ('0', '1'):
+            raise v.Invalid('遮敏显示开关无效')
+        redaction_ids = request.args.get('ids')
+        chosen = None
+        if redaction_ids is not None:
+            chosen = []
+            for item_id in redaction_ids.split(','):
+                if not item_id:
+                    continue
+                if not any(item['id'] == item_id for item in redaction_items(version)):
+                    raise v.Invalid('所选遮敏区域不属于该版次')
+                chosen.append(item_id)
+            chosen = [item for item in redaction_items(version) if item['id'] in chosen]
+        else:
+            chosen = redaction_items(version)
+        image = load(store, version)
+        if mask == '1':
+            image = apply(image, chosen)
+        else:
+            from PIL import ImageDraw
+            from .redactions import pixel_box
+            draw = ImageDraw.Draw(image)
+            width, height = image.size
+            for item in chosen:
+                left, top, right, bottom = pixel_box(item['bounds'], (width, height))
+                draw.rectangle([left, top, right - 1, bottom - 1], outline='#e0362a', width=max(2, round(width / 400)))
+        if request.args.get('annotations') == '1':
+            image = overlay(image, version['annotations'])
+        return image_response(thumbnail(image, v.integer(request.args.get('size', 1200), '预览尺寸', 64, 2400)))
+
+    @api.post('/documents/<key>/pages/<page_id>/redactions')
+    def add_page_redaction(key, page_id):
+        values = body()
+        return jsonify(redactions.add(key, page_id, values.get('version_id'), values, values.get('revision')))
+
+    @api.patch('/documents/<key>/pages/<page_id>/redactions/<redaction_id>')
+    def edit_redaction(key, page_id, redaction_id):
+        values = body()
+        return jsonify(redactions.update(key, page_id, values.get('version_id'), redaction_id, values, values.get('revision')))
+
+    @api.delete('/documents/<key>/pages/<page_id>/redactions/<redaction_id>')
+    def delete_redaction(key, page_id, redaction_id):
+        values = body()
+        return jsonify(redactions.remove(key, page_id, values.get('version_id'), redaction_id, values.get('revision')))
+
+    @api.post('/documents/<key>/delivery/plan')
+    def delivery_plan_route(key):
+        return jsonify(delivery.report(key, body()))
+
+    @api.post('/documents/<key>/delivery/preview')
+    def delivery_preview(key):
+        values = body()
+        image = delivery.preview(key, values)
+        return image_response(thumbnail(image, v.integer(values.get('size', 1200), '预览尺寸', 64, 2400)))
+
+    @api.post('/documents/<key>/delivery/package')
+    def delivery_package(key):
+        key = v.identifier(key)
+        return download(delivery.package(key, body()), 'redacted-'+key+'.zip', 'application/zip')
+
+    @api.get('/documents/<key>/pages/<page_id>/statistics')
     def statistics(key, page_id):
         values = body()
         _, _, version = get_version(key, page_id, values.get('version_id'))

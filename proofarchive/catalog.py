@@ -14,7 +14,7 @@ class Catalog:
         version = {'id': uid(), 'asset': asset, 'label': v.text(label or filename, '版次名'),
                    'created': now(), 'pixels': list(image.size), 'dpi': metadata['dpi'],
                    'trim_mm': [image.width / metadata['dpi'][0] * 25.4, image.height / metadata['dpi'][1] * 25.4],
-                   'bleed_mm': [0., 0., 0., 0.], 'annotations': [], 'status': 'unreviewed',
+                   'bleed_mm': [0., 0., 0., 0.], 'annotations': [], 'redactions': [], 'status': 'unreviewed',
                    'reviews': [], 'source': {'filename': filename, 'metadata': metadata}, 'parent': None}
         def change(document):
             if page_id:
@@ -95,6 +95,8 @@ class Catalog:
                 version['parent'] = mapping.get(version.get('parent'))
                 for annotation in version['annotations']:
                     annotation['id'] = uid()
+                for redaction in version.get('redactions', []):
+                    redaction['id'] = uid()
             copied['current'] = mapping[copied['current']]
             document['pages'].append(copied)
         return self.store.mutate(key, expected, '复制页面', change)
