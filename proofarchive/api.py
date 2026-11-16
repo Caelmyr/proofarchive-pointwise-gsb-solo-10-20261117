@@ -14,6 +14,7 @@ from .compare import compare_images
 from .separations import separation_report, channel_preview, ink_preview
 from .preflight import inspect_document
 from .layout import contact_sheet
+from .impose import parse_config, build_plan, render_sheet, impose_zip, encode_sheet
 from .packages import export_package, import_package
 
 
@@ -181,6 +182,23 @@ def install(app, root):
         if request.args.get('view') == 'index':
             return jsonify(index)
         return image_response(image)
+
+    @api.get('/documents/<key>/impose')
+    def impose(key):
+        document = store.read(key)
+        config = parse_config(request.args, len(document['pages']))
+        view = request.args.get('view', 'plan')
+        if view == 'sheet':
+            plan = build_plan(store, document, config)
+            sheet_no = v.integer(request.args.get('sheet', 1), '纸张序号', 1, plan['sheet_count'])
+            side = v.choice(request.args.get('side', 'front'), '面', ['front', 'back'])
+            image = render_sheet(store, document, config, plan, sheet_no, side)
+            return Response(encode_sheet(image, config['dpi']), mimetype='image/png',
+                            headers={'Cache-Control': 'no-store'})
+        if view == 'zip':
+            return download(impose_zip(store, document, config), 'impose-' + key + '.zip', 'application/zip')
+        v.choice(view, '拼版视图', ['plan'])
+        return jsonify(build_plan(store, document, config))
 
     @api.get('/documents/<key>/package')
     def package(key):
