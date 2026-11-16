@@ -15,6 +15,7 @@ from .separations import separation_report, channel_preview, ink_preview
 from .preflight import inspect_document
 from .layout import contact_sheet
 from .packages import export_package, import_package
+from .search import SimilaritySearch
 
 
 def body():
@@ -33,7 +34,9 @@ def install(app, root):
     store = ArchiveStore(root)
     catalog = Catalog(store)
     annotations = Annotations(store)
+    search = SimilaritySearch(store)
     app.extensions['proofarchive'] = store
+    app.extensions['proofarchive_search'] = search
     api = Blueprint('archive', __name__, url_prefix='/archive')
 
     def get_version(key, page_id, version_id=None):
@@ -174,6 +177,43 @@ def install(app, root):
     @api.get('/documents/<key>/preflight')
     def preflight(key):
         return jsonify(inspect_document(store, store.read(key)))
+
+    @api.post('/documents/<key>/pages/<page_id>/similar')
+    def start_similar(key, page_id):
+        values = body()
+        job = search.start(key, page_id, values.get('version_id'), values.get('scope', 'document'),
+                           values.get('limit'))
+        return jsonify(job), 202
+
+    @api.get('/similar/<job_id>')
+    def similar_status(job_id):
+        return jsonify(search.get(job_id))
+
+    @api.post('/similar/<job_id>/cancel')
+    def similar_cancel(job_id):
+        return jsonify(search.cancel(job_id))
+
+    @api.get('/similar/<job_id>/pair/<int:index>')
+    def similar_pair(job_id, index):
+        job = search.get(job_id)
+        if not 0 <= index < len(job['results']):
+            raise v.Invalid('相似结果不存在')
+        result = job['results'][index]
+        sample = store.version(store.page(store.read(job['sample']['document_id']),
+                                          job['sample']['page_id']), job['sample']['version_id'])
+        candidate_document = store.read(result['document_id'])
+        candidate = store.version(store.page(candidate_document, result['page_id']), result['version_id'])
+        output = search.compare_images(sample, candidate)
+        view = request.args.get('view', 'report')
+        if view == 'report':
+            return jsonify(output['report'] | {
+                'sample': job['sample'], 'candidate': {
+                    'document_id': result['document_id'], 'document_name': result['document_name'],
+                    'page_id': result['page_id'], 'page_name': result['page_name'],
+                    'version_id': result['version_id'], 'version_label': result['version_label'],
+                    'score': result['score'], 'exact': result['exact']}})
+        v.choice(view, '比较图层', ['side_by_side', 'overlay', 'heat'])
+        return image_response(output[view])
 
     @api.get('/documents/<key>/contact')
     def contact(key):

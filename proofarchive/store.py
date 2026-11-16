@@ -57,10 +57,14 @@ class ArchiveStore:
         return sorted(result, key=lambda d: d['updated'], reverse=True)
 
     def summary(self, document):
+        catalog = hashlib.sha256(json.dumps([
+            [page['id'], page['current'], [[version['id'], version['asset']] for version in page['versions']]]
+            for page in document['pages']]).encode()).hexdigest()[:16]
         return {key: copy.deepcopy(document[key]) for key in (
             'id', 'name', 'notes', 'revision', 'created', 'updated') } | {
             'page_count': len(document['pages']),
-            'version_count': sum(len(p['versions']) for p in document['pages'])}
+            'version_count': sum(len(p['versions']) for p in document['pages']),
+            'catalog': catalog}
 
     def create(self, name, notes=''):
         with self.lock:
