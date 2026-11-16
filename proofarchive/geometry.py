@@ -26,8 +26,23 @@ def transform_annotations(annotations, crop, turns):
         normalized = [(x0-left)/(right-left), (y0-top)/(bottom-top),
                       (x1-left)/(right-left), (y1-top)/(bottom-top)]
         updated['bounds'] = rotate_bounds(normalized, turns)
+        linchpin = updated.get('provenance')
+        if isinstance(linchpin, dict) and linchpin.get('kind') == 'migration':
+            # The derived version has its own annotation identity, but it still
+            # came from the same original annotation.
+            linchpin['derived_from_annotation_id'] = item['id']
         result.append(updated)
     return result
+
+
+def reanchor_derived(version):
+    """Point copied migration records at this version's own annotation copies."""
+    mapping = {item['provenance']['derived_from_annotation_id']: item['id']
+               for item in version.get('annotations', [])
+               if isinstance(item.get('provenance'), dict)
+               and item['provenance'].get('derived_from_annotation_id')}
+    for record in version.get('migrations', []):
+        record['annotation_ids'] = [mapping.get(item, item) for item in record['annotation_ids']]
 
 
 def derived_version(store, version, image, label, provenance):
@@ -51,6 +66,19 @@ def transform(store, document, page_id, version_id, crop, rotation):
     version = derived_version(store, source, image, source['label'] + ' · 裁切校样',
                               {'kind': 'transform', 'crop': actual, 'rotation': rotation})
     version['annotations'] = transform_annotations(source['annotations'], actual, turns)
+    # Migration records are historical facts about the version they ran on.
+    # Keep them intact on the derived version and point their annotation links
+    # at this version's copies where a copied annotation still exists.
+    version['migrations'] = copy.deepcopy(source.get('migrations', []))
+    reanchor_derived(version)
+    # A record may only link to annotations that this derived version kept.
+    # Its source_annotation_ids still point into the version the migration ran
+    # from, which is unchanged by the crop.
+    kept = {item['id'] for item in version['annotations']}
+    for record in version['migrations']:
+        record['annotation_ids'] = [item for item in record['annotation_ids'] if item in kept]
+    version['migrations'] = [record for record in version['migrations']
+                             if record['annotation_ids']]
     source_size = source['trim_mm']
     width = source_size[0] * (actual[2]-actual[0])
     height = source_size[1] * (actual[3]-actual[1])

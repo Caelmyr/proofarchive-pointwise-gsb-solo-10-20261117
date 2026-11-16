@@ -50,6 +50,16 @@ class Annotations:
             if not any(a['id'] == annotation_id for a in version['annotations']):
                 raise v.Invalid('批注不存在')
             version['annotations'] = [a for a in version['annotations'] if a['id'] != annotation_id]
+            # A migration record may only refer to annotations that still exist;
+            # otherwise a later confirmation would believe this region was
+            # already migrated and skip it.
+            for record in version.get('migrations', []):
+                if annotation_id in record.get('annotation_ids', []):
+                    record['annotation_ids'] = [item for item in record['annotation_ids']
+                                                if item != annotation_id]
+                    record['updated'] = now()
+            version['migrations'] = [record for record in version.get('migrations', [])
+                                     if record['annotation_ids']]
         return self.store.mutate(key, expected, '移除区域批注', change)
 
 

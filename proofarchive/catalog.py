@@ -89,12 +89,40 @@ class Catalog:
             copied['id'] = uid()
             copied['name'] += ' 副本'
             mapping = {version['id']: uid() for version in copied['versions']}
+            annotation_mapping = {}
+            for version in copied['versions']:
+                for annotation in version.get('annotations', []):
+                    annotation_mapping[annotation['id']] = uid()
             for version in copied['versions']:
                 old = version['id']
                 version['id'] = mapping[old]
                 version['parent'] = mapping.get(version.get('parent'))
-                for annotation in version['annotations']:
-                    annotation['id'] = uid()
+                for annotation in version.get('annotations', []):
+                    annotation['id'] = annotation_mapping[annotation['id']]
+                    provenance = annotation.get('provenance')
+                    if isinstance(provenance, dict) and provenance.get('kind') == 'migration':
+                        # A copied page is a new page: its migrated annotations
+                        # must keep pointing at the copied source annotation,
+                        # not at the original page's object.
+                        provenance['source_version_id'] = mapping.get(provenance.get('source_version_id'))
+                        provenance['source_annotation_id'] = annotation_mapping.get(
+                            provenance.get('source_annotation_id'))
+                        if 'derived_from_annotation_id' in provenance:
+                            provenance['derived_from_annotation_id'] = annotation_mapping.get(
+                                provenance['derived_from_annotation_id'])
+                version['migrations'] = [
+                    {'id': record['id'], 'source_version_id': mapping.get(record['source_version_id']),
+                     'target_version_id': mapping.get(record['target_version_id']),
+                     'created': record.get('created'),
+                     'source_annotation_ids': [annotation_mapping.get(item)
+                                               for item in record.get('source_annotation_ids', [])],
+                     'annotation_ids': [annotation_mapping.get(item)
+                                        for item in record.get('annotation_ids', [])],
+                     'skipped': [dict(item, source_annotation_id=annotation_mapping.get(
+                         item.get('source_annotation_id')))
+                                 for item in record.get('skipped', [])],
+                     'registration': copy.deepcopy(record.get('registration'))}
+                    for record in version.get('migrations', [])]
             copied['current'] = mapping[copied['current']]
             document['pages'].append(copied)
         return self.store.mutate(key, expected, '复制页面', change)

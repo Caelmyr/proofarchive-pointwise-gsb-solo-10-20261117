@@ -15,6 +15,7 @@ from .separations import separation_report, channel_preview, ink_preview
 from .preflight import inspect_document
 from .layout import contact_sheet
 from .packages import export_package, import_package
+from . import migration as migration_service
 
 
 def body():
@@ -139,6 +140,40 @@ def install(app, root):
     def delete_annotation(key, page_id, annotation_id):
         values = body()
         return jsonify(annotations.remove(key, page_id, values.get('version_id'), annotation_id, values.get('revision')))
+
+    @api.post('/documents/<key>/pages/<page_id>/migration/preview')
+    def migration_preview(key, page_id):
+        values = body()
+        document = store.read(key)
+        page = store.page(document, page_id)
+        plan, source_image, target_image = migration_service.preview(
+            store, document, page, values.get('source_version_id'),
+            values.get('target_version_id'), values.get('annotation_ids'))
+        requested = request.args.get('format', 'plan')
+        if requested == 'image':
+            return image_response(migration_service.preview_image(
+                plan, source_image, target_image))
+        if requested != 'plan':
+            raise v.Invalid('不支持此预览格式')
+        return jsonify(plan)
+
+    @api.get('/documents/<key>/pages/<page_id>/migration/preview')
+    def migration_preview_image(key, page_id):
+        document = store.read(key)
+        page = store.page(document, page_id)
+        ids = request.args.get('annotation_ids', '')
+        plan, source_image, target_image = migration_service.preview(
+            store, document, page, request.args.get('source_version_id'),
+            request.args.get('target_version_id'), ids)
+        return image_response(migration_service.preview_image(plan, source_image, target_image))
+
+    @api.post('/documents/<key>/pages/<page_id>/migration')
+    def migration_commit(key, page_id):
+        values = body()
+        return jsonify(migration_service.commit(
+            store, key, page_id, values.get('source_version_id'), values.get('target_version_id'),
+            values.get('annotation_ids'), values.get('include'), values.get('revision'),
+            values.get('digest')))
 
     @api.post('/documents/<key>/pages/<page_id>/statistics')
     def statistics(key, page_id):
