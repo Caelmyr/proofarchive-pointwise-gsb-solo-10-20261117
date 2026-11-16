@@ -5,12 +5,13 @@ from pathlib import Path
 from flask import Blueprint, Response, jsonify, request, render_template, send_file
 from PIL import Image, ImageDraw
 from . import validation as v
-from .store import ArchiveStore
+from .store import ArchiveStore, now
 from .catalog import Catalog
 from .annotations import Annotations, overlay
 from .images import load, encode, thumbnail, region_statistics
 from .geometry import transform
-from .compare import compare_images
+from .compare import compare_images, diff_regions
+from .reviews import RegionReviews, merge as merge_reviews, summary as review_summary
 from .separations import separation_report, channel_preview, ink_preview
 from .preflight import inspect_document
 from .layout import contact_sheet
@@ -33,6 +34,7 @@ def install(app, root):
     store = ArchiveStore(root)
     catalog = Catalog(store)
     annotations = Annotations(store)
+    reviews = RegionReviews(store)
     app.extensions['proofarchive'] = store
     api = Blueprint('archive', __name__, url_prefix='/archive')
 
@@ -41,6 +43,25 @@ def install(app, root):
         page = store.page(document, page_id)
         version = store.version(page, version_id)
         return document, page, version
+
+    def comparison_context(key, page_id, values):
+        document = store.read(key)
+        page = store.page(document, page_id)
+        first = store.version(page, values.get('a') or values.get('version_a'))
+        second = store.version(page, values.get('b') or values.get('version_b'))
+        anchor = v.choice(values.get('anchor', 'center'), '对齐方式', ['center', 'top_left'])
+        output = compare_images(load(store, first), load(store, second), anchor)
+        return document, page, first, second, anchor, output
+
+    def region_listing(document, page, first, second, anchor, output):
+        regions = diff_regions(output['difference'], output['valid'])
+        merged = merge_reviews(document, page['id'], first['id'], second['id'], anchor, regions)
+        report = output['report']
+        return {'canvas': report['canvas'], 'anchor': anchor,
+                'version_a': first['id'], 'version_b': second['id'],
+                'changed_pixels': report['changed_pixels'], 'compared_pixels': report['compared_pixels'],
+                'changed_fraction': report['changed_fraction'], 'regions': merged,
+                'summary': review_summary(merged), 'revision': document['revision']}
 
     @api.get('/documents')
     def list_documents():
@@ -156,6 +177,64 @@ def install(app, root):
             return jsonify(output['report'] | {'version_a': version['id'], 'version_b': second['id'], 'revision': document['revision']})
         v.choice(view, '比较图层', ['heat', 'overlay', 'side_by_side'])
         return image_response(output[view])
+
+    @api.get('/documents/<key>/pages/<page_id>/compare/regions')
+    def compare_regions(key, page_id):
+        document, page, first, second, anchor, output = comparison_context(key, page_id, request.args)
+        return jsonify(region_listing(document, page, first, second, anchor, output))
+
+    @api.get('/documents/<key>/pages/<page_id>/compare/regions/export')
+    def export_region_review(key, page_id):
+        document, page, first, second, anchor, output = comparison_context(key, page_id, request.args)
+        listing = region_listing(document, page, first, second, anchor, output)
+        width, height = listing['canvas']
+        regions = []
+        for region in listing['regions']:
+            x, y, w, h = region['bounds']
+            regions.append(region | {'bounds_norm': [x/width, y/height, w/width, h/height],
+                                     'share_of_change': region['changed_pixels']/max(listing['changed_pixels'], 1)})
+        payload = {'format': 'proofarchive-region-review-1', 'exported_at': now(),
+                   'document': {'id': document['id'], 'name': document['name']},
+                   'page': {'id': page['id'], 'name': page['name']},
+                   'comparison': {'version_a': {'id': first['id'], 'label': first['label']},
+                                  'version_b': {'id': second['id'], 'label': second['label']},
+                                  'anchor': anchor, 'canvas': listing['canvas'],
+                                  'changed_pixels': listing['changed_pixels'],
+                                  'compared_pixels': listing['compared_pixels'],
+                                  'changed_fraction': listing['changed_fraction']},
+                   'summary': listing['summary'], 'regions': regions,
+                   'note': '区域审阅结论仅属于此页面、此版次对与此定位方式；区域编号与比较界面及本清单一一对应。'}
+        return download(json.dumps(payload, ensure_ascii=False, indent=2).encode(), 'region-review-'+key+'.json', 'application/json')
+
+    @api.get('/documents/<key>/pages/<page_id>/compare/crop')
+    def compare_crop(key, page_id):
+        document, page, first, second, anchor, output = comparison_context(key, page_id, request.args)
+        width, height = output['report']['canvas']
+        x = v.integer(request.args.get('x', 0), '区域x', 0, width - 1)
+        y = v.integer(request.args.get('y', 0), '区域y', 0, height - 1)
+        w = v.integer(request.args.get('w', 1), '区域宽', 1, width)
+        h = v.integer(request.args.get('h', 1), '区域高', 1, height)
+        pad = v.integer(request.args.get('pad', 24), '上下文边距', 0, 240)
+        side = v.choice(request.args.get('side', 'a'), '局部视图', ['a', 'b', 'diff'])
+        source = {'a': output['canvas_a'], 'b': output['canvas_b'], 'diff': output['heat']}[side]
+        box = (max(0, x - pad), max(0, y - pad), min(width, x + w + pad), min(height, y + h + pad))
+        return image_response(source.crop(box))
+
+    @api.post('/documents/<key>/pages/<page_id>/compare/reviews')
+    def decide_region(key, page_id):
+        values = body()
+        document, page, first, second, anchor, output = comparison_context(key, page_id, values)
+        regions = diff_regions(output['difference'], output['valid'])
+        target = v.integer(values.get('region'), '区域编号', 1, 100000)
+        region = next((r for r in regions if r['id'] == target), None)
+        if region is None:
+            raise v.Invalid('变化区域不存在，请刷新区域列表')
+        if 'bounds' in values and values['bounds'] != region['bounds']:
+            raise v.Invalid('区域边界已变化，请刷新区域列表')
+        updated = reviews.decide(key, page['id'], first['id'], second['id'], anchor, region,
+                                 values.get('status'), values.get('note', ''), values.get('revision'))
+        merged = merge_reviews(updated, page['id'], first['id'], second['id'], anchor, regions)
+        return jsonify({'revision': updated['revision'], 'regions': merged, 'summary': review_summary(merged)})
 
     @api.get('/documents/<key>/pages/<page_id>/separation')
     def separation(key, page_id):

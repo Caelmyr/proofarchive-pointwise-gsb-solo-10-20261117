@@ -69,6 +69,7 @@ class Catalog:
         def change(document):
             self.store.page(document, page_id)
             document['pages'] = [page for page in document['pages'] if page['id'] != page_id]
+            document['comparison_reviews'] = [r for r in document.get('comparison_reviews', []) if r['page_id'] != page_id]
         return self.store.mutate(key, expected, '移除页面', change)
 
     def review(self, key, page_id, version_id, status, note, expected=None):

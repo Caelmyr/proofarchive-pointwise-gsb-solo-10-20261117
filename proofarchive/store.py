@@ -67,7 +67,8 @@ class ArchiveStore:
             document = {'id': uid(), 'name': v.text(name, '档案名'),
                         'notes': v.text(notes, '备注', 3000, True), 'revision': 0,
                         'created': now(), 'updated': now(), 'pages': [],
-                        'history': [], 'snapshots': [], 'settings': {'paper': [210., 297.], 'bleed_mm': 3.}}
+                        'history': [], 'snapshots': [], 'comparison_reviews': [],
+                        'settings': {'paper': [210., 297.], 'bleed_mm': 3.}}
             return self.write(document)
 
     def mutate(self, key, expected, label, action):

@@ -61,12 +61,15 @@ def import_package(store, raw):
         copied = copy.deepcopy(pages)
         page_ids = set()
         version_ids = set()
+        page_mapping = {}
+        version_mapping = {}
         for page in copied:
             old_page_id = page['id']
             if old_page_id in page_ids:
                 raise v.Invalid('档案页身份重复')
             page_ids.add(old_page_id)
             page['id'] = uid()
+            page_mapping[old_page_id] = page['id']
             page['name'] = v.text(page['name'], '页面名')
             versions = v.list_value(page.get('versions'), 100)
             mapping = {}
@@ -76,6 +79,7 @@ def import_package(store, raw):
                     raise v.Invalid('档案版次身份重复')
                 version_ids.add(old_id)
                 mapping[old_id] = uid()
+            version_mapping.update(mapping)
             if page['current'] not in mapping:
                 raise v.Invalid('档案当前版次缺失')
             page['current'] = mapping[page['current']]
@@ -93,8 +97,28 @@ def import_package(store, raw):
                     annotation['id'] = uid()
                     annotation['bounds'] = v.rectangle(annotation['bounds'])
                     annotation['text'] = v.text(annotation['text'], '批注', 3000)
+        from .reviews import STATUSES
+        restored_reviews = []
+        for record in v.list_value(document.get('comparison_reviews', []), 5000):
+            if not isinstance(record, dict):
+                raise v.Invalid('区域审阅记录格式无效')
+            if (record.get('page_id') not in page_mapping or record.get('version_a') not in version_mapping
+                    or record.get('version_b') not in version_mapping):
+                continue
+            bounds = record.get('bounds')
+            if not isinstance(bounds, list) or len(bounds) != 4:
+                raise v.Invalid('区域审阅记录边界无效')
+            restored_reviews.append({'id': uid(), 'page_id': page_mapping[record['page_id']],
+                'version_a': version_mapping[record['version_a']], 'version_b': version_mapping[record['version_b']],
+                'anchor': v.choice(record.get('anchor'), '对齐方式', ['center', 'top_left']),
+                'region': v.integer(record.get('region'), '区域编号', 1, 100000),
+                'bounds': [v.number(x, '区域边界', 0, 16000) for x in bounds],
+                'changed_pixels': v.integer(record.get('changed_pixels'), '变化像素', 0, 16000000),
+                'status': v.choice(record.get('status'), '区域审阅状态', STATUSES),
+                'note': v.text(record.get('note', ''), '区域审阅意见', 1000, True), 'updated': now()})
         created = store.create(name+' · 导入', document.get('notes', ''))
         def restore(target):
             target['pages'] = copied
+            target['comparison_reviews'] = restored_reviews
             target['settings'] = copy.deepcopy(document.get('settings', {'paper': [210., 297.], 'bleed_mm': 3.}))
         return store.mutate(created['id'], 0, '从校样档案包导入', restore)
