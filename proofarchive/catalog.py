@@ -15,7 +15,7 @@ class Catalog:
                    'created': now(), 'pixels': list(image.size), 'dpi': metadata['dpi'],
                    'trim_mm': [image.width / metadata['dpi'][0] * 25.4, image.height / metadata['dpi'][1] * 25.4],
                    'bleed_mm': [0., 0., 0., 0.], 'annotations': [], 'status': 'unreviewed',
-                   'reviews': [], 'source': {'filename': filename, 'metadata': metadata}, 'parent': None}
+                   'reviews': [], 'exceptions': [], 'source': {'filename': filename, 'metadata': metadata}, 'parent': None}
         def change(document):
             if page_id:
                 page = self.store.page(document, page_id)
@@ -93,6 +93,7 @@ class Catalog:
                 old = version['id']
                 version['id'] = mapping[old]
                 version['parent'] = mapping.get(version.get('parent'))
+                version['exceptions'] = []
                 for annotation in version['annotations']:
                     annotation['id'] = uid()
             copied['current'] = mapping[copied['current']]

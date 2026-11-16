@@ -25,6 +25,8 @@ class ArchiveStore:
         self.assets.mkdir(exist_ok=True)
         self.documents = self.root / 'documents'
         self.documents.mkdir(exist_ok=True)
+        self.runs = self.root / 'runs'
+        self.runs.mkdir(exist_ok=True)
         self.lock = threading.RLock()
 
     def path(self, key):
@@ -99,6 +101,28 @@ class ArchiveStore:
         if not path.exists():
             raise v.Invalid('图像资源丢失')
         return path.read_bytes()
+
+    def run_path(self, key):
+        return self.runs / (v.identifier(key) + '.json')
+
+    def read_run(self, key):
+        with self.lock:
+            path = self.run_path(key)
+            if not path.exists():
+                return None
+            return json.loads(path.read_text())
+
+    def write_run(self, key, run):
+        payload = json.dumps(run, ensure_ascii=False, allow_nan=False, indent=2)
+        target = self.run_path(key)
+        temporary = target.with_suffix('.' + uid() + '.tmp')
+        with self.lock:
+            with temporary.open('w') as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+        return run
 
     def snapshot(self, key, expected, name):
         def change(document):

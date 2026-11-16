@@ -33,7 +33,8 @@ def transform_annotations(annotations, crop, turns):
 def derived_version(store, version, image, label, provenance):
     result = copy.deepcopy(version)
     result.update(id=uid(), parent=version['id'], label=label, asset=store.asset_put(encode(image)),
-                  pixels=list(image.size), created=now(), status='unreviewed', reviews=[], source=provenance)
+                  pixels=list(image.size), created=now(), status='unreviewed', reviews=[], exceptions=[],
+                  source=provenance)
     return result
 
 

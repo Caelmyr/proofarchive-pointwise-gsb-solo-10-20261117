@@ -13,6 +13,8 @@ from .geometry import transform
 from .compare import compare_images
 from .separations import separation_report, channel_preview, ink_preview
 from .preflight import inspect_document
+from .profiles import Profiles
+from .store import uid, now
 from .layout import contact_sheet
 from .packages import export_package, import_package
 
@@ -33,6 +35,7 @@ def install(app, root):
     store = ArchiveStore(root)
     catalog = Catalog(store)
     annotations = Annotations(store)
+    profiles = Profiles(store)
     app.extensions['proofarchive'] = store
     api = Blueprint('archive', __name__, url_prefix='/archive')
 
@@ -41,6 +44,16 @@ def install(app, root):
         page = store.page(document, page_id)
         version = store.version(page, version_id)
         return document, page, version
+
+    def run_preflight(key):
+        document = store.read(key)
+        run = {'id': uid(), 'at': now(), 'document_id': document['id'],
+               'document_revision': document['revision'],
+               'result': inspect_document(store, document)}
+        return store.write_run(key, run)
+
+    def current_run(key):
+        return store.read_run(key) or run_preflight(key)
 
     @api.get('/documents')
     def list_documents():
@@ -171,9 +184,44 @@ def install(app, root):
             return image_response(ink_preview(image, total, limit))
         return image_response(channel_preview(channels, view))
 
+    @api.post('/documents/<key>/preflight')
+    def preflight_run(key):
+        return jsonify(run_preflight(key))
+
     @api.get('/documents/<key>/preflight')
-    def preflight(key):
-        return jsonify(inspect_document(store, store.read(key)))
+    def preflight_last(key):
+        store.read(key)
+        return jsonify(current_run(key))
+
+    @api.post('/documents/<key>/profiles')
+    def create_profile(key):
+        values = body()
+        return jsonify(profiles.create(key, values, values.get('revision')))
+
+    @api.patch('/documents/<key>/profiles/<profile_id>')
+    def edit_profile(key, profile_id):
+        values = body()
+        return jsonify(profiles.update(key, profile_id, values, values.get('revision')))
+
+    @api.delete('/documents/<key>/profiles/<profile_id>')
+    def delete_profile(key, profile_id):
+        values = body()
+        return jsonify(profiles.remove(key, profile_id, values.get('revision')))
+
+    @api.post('/documents/<key>/pages/<page_id>/profile')
+    def assign_profile(key, page_id):
+        values = body()
+        return jsonify(profiles.assign(key, page_id, values.get('profile_id'), values.get('revision')))
+
+    @api.post('/documents/<key>/pages/<page_id>/versions/<version_id>/exceptions')
+    def add_exception(key, page_id, version_id):
+        values = body()
+        return jsonify(profiles.add_exception(key, page_id, version_id, values.get('code'), values.get('reason'), values.get('revision')))
+
+    @api.delete('/documents/<key>/pages/<page_id>/versions/<version_id>/exceptions/<exception_id>')
+    def remove_exception(key, page_id, version_id, exception_id):
+        values = body()
+        return jsonify(profiles.remove_exception(key, page_id, version_id, exception_id, values.get('revision')))
 
     @api.get('/documents/<key>/contact')
     def contact(key):
@@ -206,12 +254,17 @@ def install(app, root):
     @api.get('/documents/<key>/report')
     def report(key):
         document = store.read(key)
-        output = {'format': 'proofarchive-review-1', 'document': document, 'preflight': inspect_document(store, document)}
+        run = current_run(key)
+        output = {'format': 'proofarchive-review-2', 'document': document,
+                  'preflight_run': {'id': run['id'], 'at': run['at'],
+                                    'document_revision': run['document_revision'],
+                                    'stale': run['document_revision'] != document['revision']},
+                  'preflight': run['result']}
         return download(json.dumps(output, ensure_ascii=False, indent=2).encode(), 'review-'+key+'.json', 'application/json')
 
     @api.post('/demo')
     def demo():
-        document = store.create('春季展览手册 · 合成校样', '程序绘制的示范素材，不代表真实印刷观测。包含三页及封面两个版次。')
+        document = store.create('春季展览手册 · 合成校样', '程序绘制的示范素材，不代表真实印刷观测。包含三页及封面两个版次，并预置屏幕审阅、正式印刷、远景展板三种预检用途方案。')
         key = document['id']
         for index, color in enumerate(['#165e83', '#ce6c48', '#468575']):
             image = Image.new('RGBA', (640, 900), 'white')
@@ -230,6 +283,17 @@ def install(app, root):
                 draw.text((75, 775), 'UPDATED TIME', fill='#253447', font_size=19)
                 document = catalog.import_page(key, encode(image), 'Cover-v2.png', page_id=cover['id'])
                 document = annotations.add(key, cover['id'], None, {'bounds': [.09, .83, .43, .93], 'text': '请核对活动时间区域的底色与文字。', 'kind': 'issue'})
+        presets = [{'name': '屏幕审阅稿', 'resolution': {'minimum_dpi': 96, 'severity': 'warning'},
+                    'bleed': {'edges': [0, 0, 0, 0], 'severity': 'off'}, 'ink': {'severity': 'off'}},
+                   {'name': '正式印刷页', 'resolution': {'minimum_dpi': 300, 'severity': 'error'},
+                    'bleed': {'edges': [3, 3, 3, 3], 'severity': 'warning'}, 'ink': {'limit_percent': 300, 'severity': 'warning'}},
+                   {'name': '远景展板', 'resolution': {'minimum_dpi': 72, 'severity': 'warning'},
+                    'bleed': {'edges': [0, 0, 0, 0], 'severity': 'off'}, 'ink': {'limit_percent': 320, 'severity': 'warning'}}]
+        for preset in presets:
+            document = profiles.create(key, preset)
+        assignments = [document['settings']['profiles'][i]['id'] for i in range(3)]
+        for page, profile_id in zip(document['pages'], assignments):
+            document = profiles.assign(key, page['id'], profile_id)
         return jsonify(document)
 
     app.register_blueprint(api)

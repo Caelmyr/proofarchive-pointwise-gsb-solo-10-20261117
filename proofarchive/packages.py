@@ -68,6 +68,8 @@ def import_package(store, raw):
             page_ids.add(old_page_id)
             page['id'] = uid()
             page['name'] = v.text(page['name'], '页面名')
+            if page.get('profile') is not None and not isinstance(page.get('profile'), str):
+                raise v.Invalid('档案页面方案引用无效')
             versions = v.list_value(page.get('versions'), 100)
             mapping = {}
             for version in versions:
@@ -86,6 +88,7 @@ def import_package(store, raw):
                 if version['asset'] not in restored_assets:
                     raise v.Invalid('档案版次缺少像素资源')
                 version['asset'] = restored_assets[version['asset']]
+                version['exceptions'] = []
                 if len(version.get('trim_mm', [])) != 2:
                     raise v.Invalid('档案物理尺寸缺失')
                 version['trim_mm'] = [v.number(x, '成品尺寸', 1, 5000) for x in version['trim_mm']]
@@ -94,7 +97,27 @@ def import_package(store, raw):
                     annotation['bounds'] = v.rectangle(annotation['bounds'])
                     annotation['text'] = v.text(annotation['text'], '批注', 3000)
         created = store.create(name+' · 导入', document.get('notes', ''))
+        settings = copy.deepcopy(document.get('settings', {'paper': [210., 297.], 'bleed_mm': 3.}))
+        if not isinstance(settings, dict):
+            raise v.Invalid('档案设置无效')
+        from .profiles import normalize_profile, MAX_PROFILES
+        raw_profiles = settings.get('profiles', [])
+        if raw_profiles is None:
+            raw_profiles = []
+        profiles = v.list_value(raw_profiles, MAX_PROFILES)
+        normalized = []
+        for entry in profiles:
+            profile = normalize_profile(entry, entry.get('id') if isinstance(entry, dict) else None)
+            profile['id'] = v.text(profile['id'], '方案编号')
+            normalized.append(profile)
+        if len({profile['id'] for profile in normalized}) != len(normalized):
+            raise v.Invalid('档案用途方案编号重复')
+        settings['profiles'] = normalized
+        known = {profile['id'] for profile in normalized}
+        for page in copied:
+            if page.get('profile') not in known:
+                page['profile'] = None
         def restore(target):
             target['pages'] = copied
-            target['settings'] = copy.deepcopy(document.get('settings', {'paper': [210., 297.], 'bleed_mm': 3.}))
+            target['settings'] = settings
         return store.mutate(created['id'], 0, '从校样档案包导入', restore)
